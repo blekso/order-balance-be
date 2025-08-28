@@ -14,7 +14,6 @@ import {
   OrderType,
 } from './schema/order.schema';
 import { Trade, TradeDocument } from './schema/trade.schema';
-import { CreateOrderDto } from './dto/create-order.dto';
 import { ethers } from 'ethers';
 import { orderTypes } from 'src/utils';
 
@@ -44,21 +43,26 @@ export class OrderService {
     @InjectModel(Trade.name) private readonly tradeModel: Model<TradeDocument>,
   ) {}
 
-  async create(dto: CreateOrderDto) {
-    console.log('go');
-    const price = Number(dto.price);
-    const quantity = Number(dto.quantity);
-    const total = Number.isFinite(dto.total)
-      ? Number(dto.total)
+  async create(dto: any) {
+    const type: OrderType = (dto.type ?? dto.orderType) as OrderType;
+    if (typeof type !== 'number') {
+      throw new Error('Order type is missing');
+    }
+
+    const SCALE = 1e8;
+    const price = Number(dto.price) / SCALE;
+    const quantity = Number(dto.quantity) / SCALE;
+    const total = Number.isFinite(Number(dto.total))
+      ? Number(dto.total) / SCALE
       : price * quantity;
 
     const taker = await this.orderModel.create({
-      symbol: dto.symbol.toLowerCase(),
+      symbol: String(dto.symbol).toLowerCase(),
       price,
       quantity,
       total,
-      type: dto.type,
-      status: OrderStatus.Pending,
+      type,
+      status: dto.status ?? OrderStatus.Pending,
     });
 
     const trades: MatchedTrade[] = [];
