@@ -1,6 +1,8 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 import { Controller, Get, Post, Body } from '@nestjs/common';
-import { OrderService } from './order.service';
-import { CreateOrderDto } from './dto/create-order.dto';
+
+import { CreateOrderDto, OrderService } from './order.service';
 
 @Controller('order')
 export class OrderController {
@@ -8,6 +10,7 @@ export class OrderController {
 
   @Post()
   create(@Body() createOrderDto: CreateOrderDto) {
+    console.log(createOrderDto);
     return this.orderService.create(createOrderDto);
   }
 
