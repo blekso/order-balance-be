@@ -2,7 +2,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-// src/blockchain/blockchain.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ethers } from 'ethers';
 

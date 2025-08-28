@@ -1,78 +1,98 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
-// src/order/order-matching.service.ts
 import { Injectable } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import { SettleService } from 'src/settle/settle.service';
+import {
+  Order,
+  OrderDocument,
+  OrderStatus,
+  OrderType,
+} from './schema/order.schema';
+import { Trade, TradeDocument } from './schema/trade.schema';
+import { CreateOrderDto } from './dto/create-order.dto';
 
-export enum OrderType {
-  BUY = 0,
-  SELL = 1,
-}
-export enum OrderStatus {
-  OPEN = 'OPEN',
-  PARTIAL = 'PARTIAL',
-  FILLED = 'FILLED',
-}
-
-export interface CreateOrderDto {
-  symbol: string;
-  price: number;
-  quantity: number;
-  total: number;
-  type: OrderType;
-  status?: OrderStatus;
-}
-
-type Order = {
-  id: number;
-  symbol: string;
-  price: number;
-  quantity: number;
-  type: OrderType;
-  status: OrderStatus;
-  ts: number;
-};
-
-type Trade = {
+type MatchedTrade = {
   symbol: string;
   price: number;
   quantity: number;
   txHash: string;
 };
 
-let NEXT_ID = 1;
+// Helpers to classify sides + type
+const isBuy = (t: OrderType) =>
+  t === OrderType.BuyLimit || t === OrderType.BuyMarket || t === OrderType.Buy;
+
+const isSell = (t: OrderType) =>
+  t === OrderType.SellLimit ||
+  t === OrderType.SellMarket ||
+  t === OrderType.Sell;
+
+const isLimit = (t: OrderType) =>
+  t === OrderType.BuyLimit || t === OrderType.SellLimit;
 
 @Injectable()
 export class OrderService {
-  constructor(private readonly chain: SettleService) {}
+  constructor(
+    private readonly chain: SettleService,
+    @InjectModel(Order.name) private readonly orderModel: Model<OrderDocument>,
+    @InjectModel(Trade.name) private readonly tradeModel: Model<TradeDocument>,
+  ) {}
 
-  private bids: Order[] = [];
-  private asks: Order[] = [];
-
+  // === Place order, match, persist trades, update statuses
   async create(dto: CreateOrderDto) {
-    const taker: Order = {
-      id: NEXT_ID++,
+    // Defensive parsing
+    const price = Number(dto.price);
+    const quantity = Number(dto.quantity);
+    const total = Number.isFinite(dto.total)
+      ? Number(dto.total)
+      : price * quantity;
+
+    // 1) Save taker first
+    const taker = await this.orderModel.create({
       symbol: dto.symbol.toLowerCase(),
-      price: Number(dto.price),
-      quantity: Number(dto.quantity),
-      type: dto.type,
-      status: OrderStatus.OPEN,
-      ts: Date.now(),
-    };
+      price,
+      quantity,
+      total,
+      type: dto.type, // MUST be one of your schema's OrderType values
+      status: OrderStatus.Pending,
+    });
 
-    const trades: Trade[] = [];
+    const trades: MatchedTrade[] = [];
 
-    if (taker.type === OrderType.BUY) {
-      this.sortAsks();
-      while (
-        taker.quantity > 0 &&
-        this.asks.length > 0 &&
-        this.asks[0].price <= taker.price
-      ) {
-        const maker = this.asks[0];
+    // 2) BUY taker → match against SELL makers
+    if (isBuy(taker.type)) {
+      const sellTypes = [
+        OrderType.SellLimit,
+        OrderType.SellMarket,
+        OrderType.Sell,
+      ];
+      const makers = await this.orderModel
+        .find({
+          symbol: taker.symbol,
+          type: { $in: sellTypes },
+          status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
+          ...(isLimit(taker.type) ? { price: { $lte: taker.price } } : {}),
+        })
+        .sort({ price: 1, created: 1 }) // best ask first
+        .exec();
+
+      for (const maker of makers) {
+        if (taker.quantity <= 0) break;
+
         const q = Math.min(taker.quantity, maker.quantity);
-
         const txHash = await this.chain.settle(taker.symbol, maker.price, q);
+
+        await this.tradeModel.create({
+          buyOrderId: taker._id,
+          sellOrderId: maker._id,
+          symbol: taker.symbol,
+          price: maker.price,
+          quantity: q,
+          txHash,
+        });
+
         trades.push({
           symbol: taker.symbol,
           price: maker.price,
@@ -80,88 +100,104 @@ export class OrderService {
           txHash,
         });
 
+        // update remaining
         taker.quantity -= q;
         maker.quantity -= q;
-        maker.status =
-          maker.quantity === 0 ? OrderStatus.FILLED : OrderStatus.PARTIAL;
 
-        if (maker.quantity === 0) this.asks.shift();
-      }
-
-      if (taker.quantity > 0) {
-        taker.status =
-          taker.quantity < dto.quantity
-            ? OrderStatus.PARTIAL
-            : OrderStatus.OPEN;
-        this.bids.push(taker);
-        this.sortBids();
-      } else {
-        taker.status = OrderStatus.FILLED;
-      }
-    } else {
-      this.sortBids();
-      while (
-        taker.quantity > 0 &&
-        this.bids.length > 0 &&
-        this.bids[0].price >= taker.price
-      ) {
-        const maker = this.bids[0];
-        const q = Math.min(taker.quantity, maker.quantity);
-
-        const txHash = await this.chain.settle(taker.symbol, maker.price, q);
-        trades.push({
-          symbol: taker.symbol,
-          price: maker.price,
-          quantity: q,
-          txHash,
+        await this.orderModel.findByIdAndUpdate(maker._id, {
+          quantity: maker.quantity,
+          total: maker.price * maker.quantity,
+          status:
+            maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
+          completed: maker.quantity === 0 ? new Date() : undefined,
         });
-
-        taker.quantity -= q;
-        maker.quantity -= q;
-        maker.status =
-          maker.quantity === 0 ? OrderStatus.FILLED : OrderStatus.PARTIAL;
-
-        if (maker.quantity === 0) this.bids.shift();
-      }
-
-      if (taker.quantity > 0) {
-        taker.status =
-          taker.quantity < dto.quantity
-            ? OrderStatus.PARTIAL
-            : OrderStatus.OPEN;
-        this.asks.push(taker);
-        this.sortAsks();
-      } else {
-        taker.status = OrderStatus.FILLED;
       }
     }
 
-    return { orderId: taker.id, trades };
+    // 3) SELL taker → match against BUY makers
+    if (isSell(taker.type)) {
+      const buyTypes = [OrderType.BuyLimit, OrderType.BuyMarket, OrderType.Buy];
+      const makers = await this.orderModel
+        .find({
+          symbol: taker.symbol,
+          type: { $in: buyTypes },
+          status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
+          ...(isLimit(taker.type) ? { price: { $gte: taker.price } } : {}),
+        })
+        .sort({ price: -1, created: 1 }) // best bid first
+        .exec();
+
+      for (const maker of makers) {
+        if (taker.quantity <= 0) break;
+
+        const q = Math.min(taker.quantity, maker.quantity);
+        const txHash = await this.chain.settle(taker.symbol, maker.price, q);
+
+        await this.tradeModel.create({
+          buyOrderId: maker._id,
+          sellOrderId: taker._id,
+          symbol: taker.symbol,
+          price: maker.price,
+          quantity: q,
+          txHash,
+        });
+
+        trades.push({
+          symbol: taker.symbol,
+          price: maker.price,
+          quantity: q,
+          txHash,
+        });
+
+        taker.quantity -= q;
+        maker.quantity -= q;
+
+        await this.orderModel.findByIdAndUpdate(maker._id, {
+          quantity: maker.quantity,
+          total: maker.price * maker.quantity,
+          status:
+            maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
+          completed: maker.quantity === 0 ? new Date() : undefined,
+        });
+      }
+    }
+
+    // 4) Finalize taker
+    await this.orderModel.findByIdAndUpdate(taker._id, {
+      quantity: taker.quantity,
+      total: taker.price * taker.quantity,
+      status:
+        taker.quantity === 0
+          ? OrderStatus.Filled
+          : taker.quantity < quantity
+            ? OrderStatus.Partial
+            : OrderStatus.Pending,
+      completed: taker.quantity === 0 ? new Date() : undefined,
+    });
+
+    return { orderId: taker._id, trades };
   }
 
-  findAll() {
-    return {
-      bids: this.bids.map(({ id, price, quantity }) => ({
-        id,
-        price,
-        quantity,
-      })),
-      asks: this.asks.map(({ id, price, quantity }) => ({
-        id,
-        price,
-        quantity,
-      })),
-    };
-  }
+  // === Order history shaped for FE IOrderHistory
+  async findAll() {
+    const orders = await this.orderModel
+      .find()
+      .sort({ created: -1 })
+      .lean()
+      .exec();
 
-  private sortBids() {
-    this.bids.sort((a, b) =>
-      b.price === a.price ? a.ts - b.ts : b.price - a.price,
-    );
-  }
-  private sortAsks() {
-    this.asks.sort((a, b) =>
-      a.price === b.price ? a.ts - b.ts : a.price - b.price,
-    );
+    return orders.map((o) => ({
+      _id: o._id.toString(),
+      order: {
+        symbol: o.symbol,
+        price: o.price,
+        quantity: o.quantity,
+        total: o.total,
+        type: o.type,
+      },
+      created: o.created,
+      completed: o.completed,
+      status: o.status,
+    }));
   }
 }

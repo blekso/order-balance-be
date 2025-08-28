@@ -13,24 +13,17 @@ export enum OrderType {
 }
 
 export enum OrderStatus {
-  Pending,
-  Filled,
-  Canceled,
+  Pending = 0,
+  Partial = 1,
+  Filled = 2,
+  Canceled = 3,
 }
-
 @Schema({ timestamps: { createdAt: 'created', updatedAt: false } })
 export class Order {
-  @Prop({ required: true })
-  symbol: string;
-
-  @Prop({ required: true })
-  price: number;
-
-  @Prop({ required: true })
-  quantity: number;
-
-  @Prop({ required: true })
-  total: number;
+  @Prop({ required: true }) symbol: string;
+  @Prop({ required: true }) price: number;
+  @Prop({ required: true }) quantity: number;
+  @Prop({ required: true }) total: number;
 
   @Prop({ type: Number, enum: OrderType, required: true })
   type: OrderType;
@@ -38,8 +31,9 @@ export class Order {
   @Prop({ type: Number, enum: OrderStatus, default: OrderStatus.Pending })
   status: OrderStatus;
 
-  @Prop()
-  completed?: Date;
+  @Prop() completed?: Date;
+
+  @Prop() created?: Date;
 }
 
 export const OrderSchema = SchemaFactory.createForClass(Order);
