@@ -40,140 +40,149 @@ export class OrderService {
   ) {}
 
   async create(dto: CreateOrderDto) {
-    const type: OrderType = dto.orderType;
-    if (typeof type !== 'number') {
-      throw new Error('Order type is missing');
-    }
-
-    const SCALE = 1e8;
-    const price = Number(dto.price) / SCALE;
-    const quantity = Number(dto.quantity) / SCALE;
-    const total = Number.isFinite(Number(dto.total))
-      ? Number(dto.total) / SCALE
-      : price * quantity;
-
-    const taker = await this.orderModel.create({
-      symbol: String(dto.symbol).toLowerCase(),
-      price,
-      quantity,
-      total,
-      type,
-      status: dto.status ?? OrderStatus.Pending,
-    });
-
-    const trades: MatchedTrade[] = [];
-
-    if (isBuy(taker.type)) {
-      const sellTypes = [
-        OrderType.SellLimit,
-        OrderType.SellMarket,
-        OrderType.Sell,
-      ];
-      const makers = await this.orderModel
-        .find({
-          symbol: taker.symbol,
-          type: { $in: sellTypes },
-          status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
-          ...(isLimit(taker.type) ? { price: { $lte: taker.price } } : {}),
-        })
-        .sort({ price: 1, created: 1 })
-        .exec();
-
-      for (const maker of makers) {
-        if (taker.quantity <= 0) break;
-
-        const q = Math.min(taker.quantity, maker.quantity);
-        const txHash = await this.chain.settle(taker.symbol, maker.price, q);
-
-        await this.tradeModel.create({
-          buyOrderId: taker._id,
-          sellOrderId: maker._id,
-          symbol: taker.symbol,
-          price: maker.price,
-          quantity: q,
-          txHash,
-        });
-
-        trades.push({
-          symbol: taker.symbol,
-          price: maker.price,
-          quantity: q,
-          txHash,
-        });
-
-        taker.quantity -= q;
-        maker.quantity -= q;
-
-        await this.orderModel.findByIdAndUpdate(maker._id, {
-          quantity: maker.quantity,
-          total: maker.price * maker.quantity,
-          status:
-            maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
-          completed: maker.quantity === 0 ? new Date() : undefined,
-        });
+    try {
+      const type: OrderType = dto.orderType;
+      if (typeof type !== 'number') {
+        throw new Error('Order type is missing');
       }
-    }
 
-    if (isSell(taker.type)) {
-      const buyTypes = [OrderType.BuyLimit, OrderType.BuyMarket, OrderType.Buy];
-      const makers = await this.orderModel
-        .find({
-          symbol: taker.symbol,
-          type: { $in: buyTypes },
-          status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
-          ...(isLimit(taker.type) ? { price: { $gte: taker.price } } : {}),
-        })
-        .sort({ price: -1, created: 1 })
-        .exec();
+      const SCALE = 1e8;
+      const price = Number(dto.price) / SCALE;
+      const quantity = Number(dto.quantity) / SCALE;
+      const total = Number.isFinite(Number(dto.total))
+        ? Number(dto.total) / SCALE
+        : price * quantity;
 
-      for (const maker of makers) {
-        if (taker.quantity <= 0) break;
+      const taker = await this.orderModel.create({
+        symbol: String(dto.symbol).toLowerCase(),
+        price,
+        quantity,
+        total,
+        type,
+        status: dto.status ?? OrderStatus.Pending,
+      });
 
-        const q = Math.min(taker.quantity, maker.quantity);
-        const txHash = await this.chain.settle(taker.symbol, maker.price, q);
+      const trades: MatchedTrade[] = [];
 
-        await this.tradeModel.create({
-          buyOrderId: maker._id,
-          sellOrderId: taker._id,
-          symbol: taker.symbol,
-          price: maker.price,
-          quantity: q,
-          txHash,
-        });
+      if (isBuy(taker.type)) {
+        const sellTypes = [
+          OrderType.SellLimit,
+          OrderType.SellMarket,
+          OrderType.Sell,
+        ];
+        const makers = await this.orderModel
+          .find({
+            symbol: taker.symbol,
+            type: { $in: sellTypes },
+            status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
+            ...(isLimit(taker.type) ? { price: { $lte: taker.price } } : {}),
+          })
+          .sort({ price: 1, created: 1 })
+          .exec();
 
-        trades.push({
-          symbol: taker.symbol,
-          price: maker.price,
-          quantity: q,
-          txHash,
-        });
+        for (const maker of makers) {
+          if (taker.quantity <= 0) break;
 
-        taker.quantity -= q;
-        maker.quantity -= q;
+          const q = Math.min(taker.quantity, maker.quantity);
+          const txHash = await this.chain.settle(taker.symbol, maker.price, q);
 
-        await this.orderModel.findByIdAndUpdate(maker._id, {
-          quantity: maker.quantity,
-          total: maker.price * maker.quantity,
-          status:
-            maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
-          completed: maker.quantity === 0 ? new Date() : undefined,
-        });
+          await this.tradeModel.create({
+            buyOrderId: taker._id,
+            sellOrderId: maker._id,
+            symbol: taker.symbol,
+            price: maker.price,
+            quantity: q,
+            txHash,
+          });
+
+          trades.push({
+            symbol: taker.symbol,
+            price: maker.price,
+            quantity: q,
+            txHash,
+          });
+
+          taker.quantity -= q;
+          maker.quantity -= q;
+
+          await this.orderModel.findByIdAndUpdate(maker._id, {
+            quantity: maker.quantity,
+            total: maker.price * maker.quantity,
+            status:
+              maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
+            completed: maker.quantity === 0 ? new Date() : undefined,
+          });
+        }
       }
+
+      if (isSell(taker.type)) {
+        const buyTypes = [
+          OrderType.BuyLimit,
+          OrderType.BuyMarket,
+          OrderType.Buy,
+        ];
+        const makers = await this.orderModel
+          .find({
+            symbol: taker.symbol,
+            type: { $in: buyTypes },
+            status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
+            ...(isLimit(taker.type) ? { price: { $gte: taker.price } } : {}),
+          })
+          .sort({ price: -1, created: 1 })
+          .exec();
+
+        for (const maker of makers) {
+          if (taker.quantity <= 0) break;
+
+          const q = Math.min(taker.quantity, maker.quantity);
+          const txHash = await this.chain.settle(taker.symbol, maker.price, q);
+
+          await this.tradeModel.create({
+            buyOrderId: maker._id,
+            sellOrderId: taker._id,
+            symbol: taker.symbol,
+            price: maker.price,
+            quantity: q,
+            txHash,
+          });
+
+          trades.push({
+            symbol: taker.symbol,
+            price: maker.price,
+            quantity: q,
+            txHash,
+          });
+
+          taker.quantity -= q;
+          maker.quantity -= q;
+
+          await this.orderModel.findByIdAndUpdate(maker._id, {
+            quantity: maker.quantity,
+            total: maker.price * maker.quantity,
+            status:
+              maker.quantity === 0 ? OrderStatus.Filled : OrderStatus.Partial,
+            completed: maker.quantity === 0 ? new Date() : undefined,
+          });
+        }
+      }
+
+      await this.orderModel.findByIdAndUpdate(taker._id, {
+        quantity: taker.quantity,
+        total: taker.price * taker.quantity,
+        status:
+          taker.quantity === 0
+            ? OrderStatus.Filled
+            : taker.quantity < quantity
+              ? OrderStatus.Partial
+              : OrderStatus.Pending,
+        completed: taker.quantity === 0 ? new Date() : undefined,
+      });
+
+      return { orderId: taker._id, trades };
+    } catch (err) {
+      console.log(`Order create failed: ${String(err)}`);
+      throw err instanceof Error ? err : new Error('Order create failed');
     }
-
-    await this.orderModel.findByIdAndUpdate(taker._id, {
-      quantity: taker.quantity,
-      total: taker.price * taker.quantity,
-      status:
-        taker.quantity === 0
-          ? OrderStatus.Filled
-          : taker.quantity < quantity
-            ? OrderStatus.Partial
-            : OrderStatus.Pending,
-      completed: taker.quantity === 0 ? new Date() : undefined,
-    });
-
-    return { orderId: taker._id, trades };
   }
 
   async findAll() {
