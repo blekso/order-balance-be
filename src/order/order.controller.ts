@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 import { Controller, Get, Post, Body } from '@nestjs/common';
@@ -10,9 +12,9 @@ export class OrderController {
   constructor(private readonly orderService: OrderService) {}
 
   @Post()
-  create(@Body() createOrderDto: CreateOrderDto) {
-    console.log(createOrderDto);
-    return this.orderService.create(createOrderDto);
+  async create(@Body() dto: CreateOrderDto) {
+    const verified = this.orderService.verifyAndExtract(dto);
+    return this.orderService.create(verified);
   }
 
   @Get()

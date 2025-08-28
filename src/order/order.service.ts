@@ -1,3 +1,6 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 import { Injectable } from '@nestjs/common';
@@ -12,6 +15,8 @@ import {
 } from './schema/order.schema';
 import { Trade, TradeDocument } from './schema/trade.schema';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { ethers } from 'ethers';
+import { orderTypes } from 'src/utils';
 
 type MatchedTrade = {
   symbol: string;
@@ -20,7 +25,6 @@ type MatchedTrade = {
   txHash: string;
 };
 
-// Helpers to classify sides + type
 const isBuy = (t: OrderType) =>
   t === OrderType.BuyLimit || t === OrderType.BuyMarket || t === OrderType.Buy;
 
@@ -40,28 +44,25 @@ export class OrderService {
     @InjectModel(Trade.name) private readonly tradeModel: Model<TradeDocument>,
   ) {}
 
-  // === Place order, match, persist trades, update statuses
   async create(dto: CreateOrderDto) {
-    // Defensive parsing
+    console.log('go');
     const price = Number(dto.price);
     const quantity = Number(dto.quantity);
     const total = Number.isFinite(dto.total)
       ? Number(dto.total)
       : price * quantity;
 
-    // 1) Save taker first
     const taker = await this.orderModel.create({
       symbol: dto.symbol.toLowerCase(),
       price,
       quantity,
       total,
-      type: dto.type, // MUST be one of your schema's OrderType values
+      type: dto.type,
       status: OrderStatus.Pending,
     });
 
     const trades: MatchedTrade[] = [];
 
-    // 2) BUY taker → match against SELL makers
     if (isBuy(taker.type)) {
       const sellTypes = [
         OrderType.SellLimit,
@@ -75,7 +76,7 @@ export class OrderService {
           status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
           ...(isLimit(taker.type) ? { price: { $lte: taker.price } } : {}),
         })
-        .sort({ price: 1, created: 1 }) // best ask first
+        .sort({ price: 1, created: 1 })
         .exec();
 
       for (const maker of makers) {
@@ -100,7 +101,6 @@ export class OrderService {
           txHash,
         });
 
-        // update remaining
         taker.quantity -= q;
         maker.quantity -= q;
 
@@ -114,7 +114,6 @@ export class OrderService {
       }
     }
 
-    // 3) SELL taker → match against BUY makers
     if (isSell(taker.type)) {
       const buyTypes = [OrderType.BuyLimit, OrderType.BuyMarket, OrderType.Buy];
       const makers = await this.orderModel
@@ -124,7 +123,7 @@ export class OrderService {
           status: { $in: [OrderStatus.Pending, OrderStatus.Partial] },
           ...(isLimit(taker.type) ? { price: { $gte: taker.price } } : {}),
         })
-        .sort({ price: -1, created: 1 }) // best bid first
+        .sort({ price: -1, created: 1 })
         .exec();
 
       for (const maker of makers) {
@@ -162,7 +161,6 @@ export class OrderService {
       }
     }
 
-    // 4) Finalize taker
     await this.orderModel.findByIdAndUpdate(taker._id, {
       quantity: taker.quantity,
       total: taker.price * taker.quantity,
@@ -178,7 +176,6 @@ export class OrderService {
     return { orderId: taker._id, trades };
   }
 
-  // === Order history shaped for FE IOrderHistory
   async findAll() {
     const orders = await this.orderModel
       .find()
@@ -199,5 +196,29 @@ export class OrderService {
       completed: o.completed,
       status: o.status,
     }));
+  }
+
+  verifyAndExtract(dto: any) {
+    const { signature, ...order } = dto;
+
+    const domain = {
+      name: 'OrderBalance',
+      version: '1',
+      chainId: Number(process.env.CHAIN_ID),
+      verifyingContract: process.env.CONTRACT_ADDRESS as string,
+    };
+
+    const recovered = ethers.verifyTypedData(
+      domain,
+      orderTypes,
+      order,
+      signature,
+    );
+
+    if (recovered.toLowerCase() !== dto.maker.toLowerCase()) {
+      throw new Error('Invalid signature');
+    }
+
+    return dto;
   }
 }

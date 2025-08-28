@@ -8,7 +8,6 @@ import { ethers } from 'ethers';
 @Injectable()
 export class SettleService {
   private readonly log = new Logger(SettleService.name);
-  private readonly mockMode: boolean;
 
   private provider?: ethers.JsonRpcProvider;
   private signer?: ethers.Wallet;
@@ -19,35 +18,20 @@ export class SettleService {
   ];
 
   constructor() {
-    this.mockMode = process.env.MOCK_SETTLEMENT?.toLowerCase() !== 'false';
+    const rpc = process.env.ETH_RPC_URL!;
 
-    if (!this.mockMode) {
-      const rpc = process.env.ETH_RPC_URL!;
-      const pk = process.env.ENGINE_PRIVATE_KEY!;
-      const address = process.env.CONTRACT_ADDRESS!;
+    const pk = process.env.ENGINE_PRIVATE_KEY!;
+    const address = process.env.CONTRACT_ADDRESS!;
 
-      this.provider = new ethers.JsonRpcProvider(rpc);
-      this.signer = new ethers.Wallet(pk, this.provider);
-      this.contract = new ethers.Contract(address, this.abi, this.signer);
-    }
+    this.provider = new ethers.JsonRpcProvider(rpc);
+    this.signer = new ethers.Wallet(pk, this.provider);
+    this.contract = new ethers.Contract(address, this.abi, this.signer);
   }
 
   async settle(symbol: string, price: number, qty: number): Promise<string> {
-    if (this.mockMode || !this.contract) {
-      const fake =
-        '0x' +
-        Buffer.from(`${Date.now()}-${Math.random()}`)
-          .toString('hex')
-          .slice(0, 64);
-      this.log.log(
-        `[MOCK] settleTrade(${symbol}, ${price}, ${qty}) -> ${fake}`,
-      );
-      return fake;
-    }
-
     this.log.log(`Sending tx: settleTrade(${symbol}, ${price}, ${qty})`);
 
-    const tx = await this.contract.settleTrade(
+    const tx = await this.contract!.settleTrade(
       symbol,
       BigInt(Math.floor(price)),
       BigInt(Math.floor(qty)),
