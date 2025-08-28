@@ -16,6 +16,7 @@ import {
 import { Trade, TradeDocument } from './schema/trade.schema';
 import { ethers } from 'ethers';
 import { orderTypes } from 'src/utils';
+import { CreateOrderDto } from './dto/create-order.dto';
 
 type MatchedTrade = {
   symbol: string;
@@ -43,8 +44,8 @@ export class OrderService {
     @InjectModel(Trade.name) private readonly tradeModel: Model<TradeDocument>,
   ) {}
 
-  async create(dto: any) {
-    const type: OrderType = (dto.type ?? dto.orderType) as OrderType;
+  async create(dto: CreateOrderDto) {
+    const type: OrderType = dto.orderType;
     if (typeof type !== 'number') {
       throw new Error('Order type is missing');
     }
@@ -202,7 +203,7 @@ export class OrderService {
     }));
   }
 
-  verifyAndExtract(dto: any) {
+  verifyAndExtract(dto: CreateOrderDto) {
     const { signature, ...order } = dto;
 
     const domain = {

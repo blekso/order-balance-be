@@ -5,7 +5,7 @@ export class CreateOrderDto {
   price: number;
   quantity: number;
   total: number;
-  type: OrderType;
+  orderType: OrderType;
   status?: OrderStatus;
 
   maker: string;
